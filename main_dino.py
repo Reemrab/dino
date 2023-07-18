@@ -18,6 +18,7 @@ import datetime
 import time
 import math
 import json
+import pandas as pd
 from pathlib import Path
 
 import numpy as np
@@ -117,7 +118,7 @@ def get_args_parser():
         Used for small local view cropping of multi-crop.""")
 
     # Misc
-    parser.add_argument('--data_path', default='/path/to/imagenet/train/', type=str,
+    parser.add_argument('--data_path', default='', type=str,
         help='Please specify path to the ImageNet training data.')
     parser.add_argument('--output_dir', default=".", type=str, help='Path to save logs and checkpoints.')
     parser.add_argument('--saveckp_freq', default=20, type=int, help='Save checkpoint every x epochs.')
@@ -125,9 +126,27 @@ def get_args_parser():
     parser.add_argument('--num_workers', default=10, type=int, help='Number of data loading workers per GPU.')
     parser.add_argument("--dist_url", default="env://", type=str, help="""url used to set up
         distributed training; see https://pytorch.org/docs/stable/distributed.html""")
-    parser.add_argument("--local_rank", default=0, type=int, help="Please ignore and do not set this argument.")
+    # parser.add_argument("--local_rank", default=0, type=int, help="Please ignore and do not set this argument.")
+    parser.add_argument('--imsize', default=224, type=int, help='Image size')
     return parser
 
+
+class NlstDataset(torch.utils.data.Dataset):
+    def __init__(self, df, transform=None, imsize=None):
+        self.df = df
+        self.transform = transform
+        self.imsize = imsize
+    def __len__(self):
+        return len(self.df)
+    def __getitem__(self, index):
+        img = Image.open(self.df.loc[index]['PNG File Path Lung'])
+        img = img.convert('RGB')
+        if self.imsize is not None:
+            img.thumbnail((self.imsize, self.imsize), Image.ANTIALIAS)
+        if self.transform is not None:
+            img = self.transform(img)
+        return img, index
+        
 
 def train_dino(args):
     utils.init_distributed_mode(args)
@@ -142,7 +161,11 @@ def train_dino(args):
         args.local_crops_scale,
         args.local_crops_number,
     )
-    dataset = datasets.ImageFolder(args.data_path, transform=transform)
+
+    df_train = pd.read_csv(args.data_path)
+
+    dataset = NlstDataset(df_train, transform, args.imsize)
+
     sampler = torch.utils.data.DistributedSampler(dataset, shuffle=True)
     data_loader = torch.utils.data.DataLoader(
         dataset,

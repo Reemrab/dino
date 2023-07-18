@@ -25,6 +25,8 @@ from torchvision import models as torchvision_models
 
 import utils
 import vision_transformer as vits
+from PIL import Image
+import pandas as pd
 
 
 def extract_feature_pipeline(args):
@@ -35,8 +37,13 @@ def extract_feature_pipeline(args):
         pth_transforms.ToTensor(),
         pth_transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
     ])
-    dataset_train = ReturnIndexDataset(os.path.join(args.data_path, "train"), transform=transform)
-    dataset_val = ReturnIndexDataset(os.path.join(args.data_path, "val"), transform=transform)
+
+    df_train = pd.read_csv(os.path.join(args.data_path,"df_train_cons_norm.csv"))
+    df_val = pd.read_csv(os.path.join(args.data_path,"df_val_cons_norm.csv"))
+
+    dataset_train = NlstDataset(df_train, transform=transform)
+    dataset_val = NlstDataset(df_val, transform=transform)
+
     sampler = torch.utils.data.DistributedSampler(dataset_train, shuffle=False)
     data_loader_train = torch.utils.data.DataLoader(
         dataset_train,
@@ -182,10 +189,32 @@ def knn_classifier(train_features, train_labels, test_features, test_labels, k, 
     return top1, top5
 
 
-class ReturnIndexDataset(datasets.ImageFolder):
-    def __getitem__(self, idx):
-        img, lab = super(ReturnIndexDataset, self).__getitem__(idx)
-        return img, idx
+# class ReturnIndexDataset(datasets.ImageFolder):
+#     def __getitem__(self, idx):
+#         img, lab = super(ReturnIndexDataset, self).__getitem__(idx)
+#         return img, idx
+
+class NlstDataset(datasets.DatasetFolder):
+    def __init__(self, df, transform=None, imsize=None):
+        self.df = df
+        self.transform = transform
+        self.imsize = imsize
+        self.samples = self.make_dataset()
+
+    def make_dataset(self):
+        return [(row[1]["PNG File Path Lung"], row[1]["Abnormal"]) for row in self.df.iterrows()]
+
+    def __len__(self):
+        return len(self.df)
+    def __getitem__(self, index):
+        path, lab = self.samples[index]
+        img = Image.open(path)
+        img = img.convert('RGB')
+        if self.imsize is not None:
+            img.thumbnail((self.imsize, self.imsize), Image.ANTIALIAS)
+        if self.transform is not None:
+            img = self.transform(img)
+        return img, index
 
 
 if __name__ == '__main__':

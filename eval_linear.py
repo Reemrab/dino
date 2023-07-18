@@ -26,6 +26,8 @@ from torchvision import models as torchvision_models
 
 import utils
 import vision_transformer as vits
+import pandas as pd
+from PIL import Image
 
 
 def eval_linear(args):
@@ -68,7 +70,11 @@ def eval_linear(args):
         pth_transforms.ToTensor(),
         pth_transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
     ])
-    dataset_val = datasets.ImageFolder(os.path.join(args.data_path, "val"), transform=val_transform)
+
+    df_val = pd.read_csv(os.path.join(args.data_path,"df_val_three_labels.csv"))
+
+    dataset_val = NlstDataset(df_val, transform=val_transform)
+
     val_loader = torch.utils.data.DataLoader(
         dataset_val,
         batch_size=args.batch_size_per_gpu,
@@ -88,7 +94,11 @@ def eval_linear(args):
         pth_transforms.ToTensor(),
         pth_transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
     ])
-    dataset_train = datasets.ImageFolder(os.path.join(args.data_path, "train"), transform=train_transform)
+
+    df_train = pd.read_csv(os.path.join(args.data_path,"df_train_three_labels.csv"))
+
+    dataset_train = NlstDataset(df_train, transform=train_transform)
+
     sampler = torch.utils.data.distributed.DistributedSampler(dataset_train)
     train_loader = torch.utils.data.DataLoader(
         dataset_train,
@@ -119,6 +129,7 @@ def eval_linear(args):
     )
     start_epoch = to_restore["epoch"]
     best_acc = to_restore["best_acc"]
+    prec = 0
 
     for epoch in range(start_epoch, args.epochs):
         train_loader.sampler.set_epoch(epoch)
@@ -135,6 +146,7 @@ def eval_linear(args):
             print(f'Max accuracy so far: {best_acc:.2f}%')
             log_stats = {**{k: v for k, v in log_stats.items()},
                          **{f'test_{k}': v for k, v in test_stats.items()}}
+
         if utils.is_main_process():
             with (Path(args.output_dir) / "log.txt").open("a") as f:
                 f.write(json.dumps(log_stats) + "\n")
@@ -148,6 +160,7 @@ def eval_linear(args):
             torch.save(save_dict, os.path.join(args.output_dir, "checkpoint.pth.tar"))
     print("Training of the supervised linear classifier on frozen features completed.\n"
                 "Top-1 test accuracy: {acc:.1f}".format(acc=best_acc))
+
 
 
 def train(model, linear_classifier, optimizer, loader, epoch, n, avgpool):
@@ -197,6 +210,8 @@ def validate_network(val_loader, model, linear_classifier, n, avgpool):
     linear_classifier.eval()
     metric_logger = utils.MetricLogger(delimiter="  ")
     header = 'Test:'
+    y_true = [] 
+    y_pred = []
     for inp, target in metric_logger.log_every(val_loader, 20, header):
         # move to gpu
         inp = inp.cuda(non_blocking=True)
@@ -219,6 +234,11 @@ def validate_network(val_loader, model, linear_classifier, n, avgpool):
             acc1, acc5 = utils.accuracy(output, target, topk=(1, 5))
         else:
             acc1, = utils.accuracy(output, target, topk=(1,))
+            
+        
+        for i in range(len(output)):
+            y_true.append(target[i].item())
+            y_pred.append(output.argmax(dim=1)[i].item())
 
         batch_size = inp.shape[0]
         metric_logger.update(loss=loss.item())
@@ -229,8 +249,11 @@ def validate_network(val_loader, model, linear_classifier, n, avgpool):
         print('* Acc@1 {top1.global_avg:.3f} Acc@5 {top5.global_avg:.3f} loss {losses.global_avg:.3f}'
           .format(top1=metric_logger.acc1, top5=metric_logger.acc5, losses=metric_logger.loss))
     else:
+        prec = utils.precision(y_pred, y_true, topk=(1,))
+        metric_logger.meters['prec'].update(prec)
         print('* Acc@1 {top1.global_avg:.3f} loss {losses.global_avg:.3f}'
           .format(top1=metric_logger.acc1, losses=metric_logger.loss))
+        
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
 
@@ -250,6 +273,27 @@ class LinearClassifier(nn.Module):
         # linear layer
         return self.linear(x)
 
+class NlstDataset(datasets.DatasetFolder):
+    def __init__(self, df, transform=None, imsize=None):
+        self.df = df
+        self.transform = transform
+        self.imsize = imsize
+        self.samples = self.make_dataset()
+
+    def make_dataset(self):
+        return [(row[1]["png_file_path"], row[1]["label_id"]) for row in self.df.iterrows()]
+
+    def __len__(self):
+        return len(self.df)
+    def __getitem__(self, index):
+        path, lab = self.samples[index]
+        img = Image.open(path)
+        img = img.convert('RGB')
+        if self.imsize is not None:
+            img.thumbnail((self.imsize, self.imsize), Image.ANTIALIAS)
+        if self.transform is not None:
+            img = self.transform(img)
+        return img, lab
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser('Evaluation with linear classification on ImageNet')

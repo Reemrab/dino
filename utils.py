@@ -31,6 +31,7 @@ import torch
 from torch import nn
 import torch.distributed as dist
 from PIL import ImageFilter, ImageOps
+from sklearn.metrics import precision_score
 
 
 class GaussianBlur(object):
@@ -507,6 +508,11 @@ def accuracy(output, target, topk=(1,)):
     pred = pred.t()
     correct = pred.eq(target.reshape(1, -1).expand_as(pred))
     return [correct[:k].reshape(-1).float().sum(0) * 100. / batch_size for k in topk]
+
+def precision(output, target, topk=(1,)):
+    """Computes the precision over the k top predictions for the specified values of k"""
+    prec = precision_score(target, output, average=None)
+    return prec
 
 
 def _no_grad_trunc_normal_(tensor, mean, std, a, b):
